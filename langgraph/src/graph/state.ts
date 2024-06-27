@@ -22,7 +22,6 @@ import { RunnableCallable } from "../utils.js";
 import { All } from "../pregel/types.js";
 import { TAG_HIDDEN } from "../constants.js";
 import { InvalidUpdateError } from "../errors.js";
-import { DynamicBarrierValue } from "../channels/dynamic_barrier_value.js";
 
 const ROOT = "__root__";
 
@@ -53,9 +52,9 @@ export interface StateGraphArgs<Channels extends object | unknown> {
 }
 
 export class StateGraph<
-  const State extends object | unknown,
-  const Update extends object | unknown = Partial<State>,
-  const N extends string = typeof START
+  State extends object | unknown,
+  Update extends object | unknown = Partial<State>,
+  N extends string = typeof START
 > extends Graph<N, State, Update> {
   channels: Record<string, BaseChannel>;
 
@@ -207,19 +206,29 @@ function _getChannels<Channels extends Record<string, unknown> | unknown>(
 }
 
 function getChannel<T>(reducer: SingleReducer<T>): BaseChannel<T> {
-  if (reducer && "reducer" in reducer && reducer.reducer) {
+  if (
+    typeof reducer === "object" &&
+    reducer &&
+    "reducer" in reducer &&
+    reducer.reducer
+  ) {
     return new BinaryOperatorAggregate<T>(reducer.reducer, reducer.default);
   }
-  if (reducer && "value" in reducer && reducer.value) {
+  if (
+    typeof reducer === "object" &&
+    reducer &&
+    "value" in reducer &&
+    reducer.value
+  ) {
     return new BinaryOperatorAggregate<T>(reducer.value, reducer.default);
   }
   return new LastValue<T>();
 }
 
 export class CompiledStateGraph<
-  const State extends object | unknown,
-  const Update extends object | unknown = Partial<State>,
-  const N extends string = typeof START
+  State extends object | unknown,
+  Update extends object | unknown = Partial<State>,
+  N extends string = typeof START
 > extends CompiledGraph<N, State, Update> {
   declare builder: StateGraph<State, Update, N>;
 
@@ -341,12 +350,6 @@ export class CompiledStateGraph<
             channel: `branch:${start}:${name}:${dest}`,
             value: start,
           }));
-          if (branch.then && branch.then !== END) {
-            writes.push({
-              channel: `branch:${start}:${name}:then`,
-              value: { __names: filteredDests },
-            });
-          }
           return new ChannelWrite(writes, [TAG_HIDDEN]);
         },
         // reader
@@ -357,7 +360,7 @@ export class CompiledStateGraph<
     // attach branch subscribers
     const ends = branch.ends
       ? Object.values(branch.ends)
-      : Object.keys(this.builder.nodes).filter((n) => n !== branch.then);
+      : Object.keys(this.builder.nodes);
     for (const end of ends) {
       if (end === END) {
         continue;
@@ -366,21 +369,6 @@ export class CompiledStateGraph<
       (this.channels as Record<string, BaseChannel>)[channelName] =
         new EphemeralValue();
       this.nodes[end as N].triggers.push(channelName);
-    }
-
-    if (branch.then && branch.then !== END) {
-      const channelName = `branch:${start}:${name}:then`;
-      (this.channels as Record<string, BaseChannel>)[channelName] =
-        new DynamicBarrierValue();
-      this.nodes[branch.then].triggers.push(channelName);
-      for (const end of ends) {
-        if (end === END) {
-          continue;
-        }
-        this.nodes[end as N].writers.push(
-          new ChannelWrite([{ channel: channelName, value: end }], [TAG_HIDDEN])
-        );
-      }
     }
   }
 }

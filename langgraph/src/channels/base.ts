@@ -1,4 +1,4 @@
-import { deepCopy } from "../checkpoint/base.js";
+import { ReadonlyCheckpoint, deepCopy } from "../checkpoint/base.js";
 import { uuid6 } from "../checkpoint/id.js";
 import { Checkpoint } from "../checkpoint/index.js";
 import { EmptyChannelError } from "../errors.js";
@@ -52,7 +52,7 @@ export abstract class BaseChannel<
 
 export function emptyChannels<Cc extends Record<string, BaseChannel>>(
   channels: Cc,
-  checkpoint: Checkpoint
+  checkpoint: ReadonlyCheckpoint
 ): Cc {
   const newChannels = {} as Cc;
   for (const k in channels) {
@@ -65,7 +65,7 @@ export function emptyChannels<Cc extends Record<string, BaseChannel>>(
 }
 
 export function createCheckpoint<ValueType>(
-  checkpoint: Checkpoint,
+  checkpoint: ReadonlyCheckpoint,
   channels: Record<string, BaseChannel<ValueType>>,
   step: number
 ): Checkpoint {
@@ -76,7 +76,7 @@ export function createCheckpoint<ValueType>(
       values[k] = channels[k].checkpoint();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
-      if (error.name === EmptyChannelError.name) {
+      if (error.name === EmptyChannelError.unminifiable_name) {
         // no-op
       } else {
         throw error; // Rethrow unexpected errors

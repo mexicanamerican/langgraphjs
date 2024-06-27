@@ -25,8 +25,10 @@ export class MemorySaver extends BaseCheckpointSaver {
       if (checkpoint) {
         return {
           config,
-          checkpoint: this.serde.parse(checkpoint[0]) as Checkpoint,
-          metadata: this.serde.parse(checkpoint[1]) as CheckpointMetadata,
+          checkpoint: (await this.serde.parse(checkpoint[0])) as Checkpoint,
+          metadata: (await this.serde.parse(
+            checkpoint[1]
+          )) as CheckpointMetadata,
         };
       }
     } else {
@@ -37,8 +39,10 @@ export class MemorySaver extends BaseCheckpointSaver {
         const checkpoint = checkpoints[maxThreadTs];
         return {
           config: { configurable: { thread_id, checkpoint_id: maxThreadTs } },
-          checkpoint: this.serde.parse(checkpoint[0]) as Checkpoint,
-          metadata: this.serde.parse(checkpoint[1]) as CheckpointMetadata,
+          checkpoint: (await this.serde.parse(checkpoint[0])) as Checkpoint,
+          metadata: (await this.serde.parse(
+            checkpoint[1]
+          )) as CheckpointMetadata,
         };
       }
     }
@@ -46,18 +50,25 @@ export class MemorySaver extends BaseCheckpointSaver {
     return undefined;
   }
 
-  async *list(config: RunnableConfig): AsyncGenerator<CheckpointTuple> {
+  async *list(
+    config: RunnableConfig,
+    limit?: number,
+    before?: RunnableConfig
+  ): AsyncGenerator<CheckpointTuple> {
     const thread_id = config.configurable?.thread_id;
     const checkpoints = this.storage[thread_id] ?? {};
 
     // sort in desc order
-    for (const [checkpoint_id, checkpoint] of Object.entries(checkpoints).sort(
-      (a, b) => b[0].localeCompare(a[0])
-    )) {
+    for (const [checkpoint_id, checkpoint] of Object.entries(checkpoints)
+      .filter((c) =>
+        before ? c[0] < before.configurable?.checkpoint_id : true
+      )
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .slice(0, limit)) {
       yield {
         config: { configurable: { thread_id, checkpoint_id } },
-        checkpoint: this.serde.parse(checkpoint[0]) as Checkpoint,
-        metadata: this.serde.parse(checkpoint[1]) as CheckpointMetadata,
+        checkpoint: (await this.serde.parse(checkpoint[0])) as Checkpoint,
+        metadata: (await this.serde.parse(checkpoint[1])) as CheckpointMetadata,
       };
     }
   }

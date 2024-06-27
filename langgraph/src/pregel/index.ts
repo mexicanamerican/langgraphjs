@@ -3,8 +3,8 @@ import {
   Runnable,
   RunnableConfig,
   RunnableFunc,
-  RunnableInterface,
   RunnableLike,
+  RunnableSequence,
   _coerceToRunnable,
   ensureConfig,
   patchConfig,
@@ -19,8 +19,11 @@ import {
 import {
   BaseCheckpointSaver,
   Checkpoint,
+  ReadonlyCheckpoint,
   copyCheckpoint,
   emptyCheckpoint,
+  getChannelVersion,
+  getVersionSeen,
 } from "../checkpoint/base.js";
 import { PregelNode } from "./read.js";
 import { validateGraph, validateKeys } from "./validate.js";
@@ -33,9 +36,18 @@ import {
   single,
 } from "./io.js";
 import { ChannelWrite, ChannelWriteEntry, PASSTHROUGH } from "./write.js";
-import { CONFIG_KEY_READ, CONFIG_KEY_SEND, INTERRUPT } from "../constants.js";
-import { initializeAsyncLocalStorageSingleton } from "../setup/async_local_storage.js";
-import { All, PregelExecutableTask, PregelTaskDescription } from "./types.js";
+import {
+  CONFIG_KEY_READ,
+  CONFIG_KEY_SEND,
+  INTERRUPT,
+  TAG_HIDDEN,
+} from "../constants.js";
+import {
+  All,
+  PregelExecutableTask,
+  PregelTaskDescription,
+  StateSnapshot,
+} from "./types.js";
 import {
   EmptyChannelError,
   GraphRecursionError,
@@ -208,8 +220,8 @@ export type PregelInputType = any;
 export type PregelOutputType = any;
 
 export class Pregel<
-    const Nn extends StrRecord<string, PregelNode>,
-    const Cc extends StrRecord<string, BaseChannel>
+    Nn extends StrRecord<string, PregelNode>,
+    Cc extends StrRecord<string, BaseChannel>
   >
   extends Runnable<PregelInputType, PregelOutputType, PregelOptions<Nn, Cc>>
   implements PregelInterface<Nn, Cc>
@@ -248,8 +260,6 @@ export class Pregel<
   constructor(fields: PregelInterface<Nn, Cc>) {
     super(fields);
 
-    // Initialize global async local storage instance for tracing
-    initializeAsyncLocalStorageSingleton();
     this.nodes = fields.nodes;
     this.channels = fields.channels;
     this.autoValidate = fields.autoValidate ?? this.autoValidate;
@@ -303,14 +313,158 @@ export class Pregel<
     }
   }
 
+  async getState(config: RunnableConfig): Promise<StateSnapshot> {
+    if (!this.checkpointer) {
+      throw new GraphValueError("No checkpointer set");
+    }
+
+    const saved = await this.checkpointer.getTuple(config);
+    const checkpoint = saved ? saved.checkpoint : emptyCheckpoint();
+    const channels = emptyChannels(this.channels, checkpoint);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [_, nextTasks] = _prepareNextTasks(
+      checkpoint,
+      this.nodes,
+      channels,
+      false
+    );
+    return {
+      values: readChannels(channels, this.streamChannelsAsIs),
+      next: nextTasks.map((task) => task.name),
+      metadata: saved?.metadata,
+      config: saved ? saved.config : config,
+      createdAt: saved?.checkpoint.ts,
+      parentConfig: saved?.parentConfig,
+    };
+  }
+
+  async *getStateHistory(
+    config: RunnableConfig,
+    limit?: number,
+    before?: RunnableConfig
+  ): AsyncIterableIterator<StateSnapshot> {
+    if (!this.checkpointer) {
+      throw new GraphValueError("No checkpointer set");
+    }
+    for await (const saved of this.checkpointer.list(config, limit, before)) {
+      const channels = emptyChannels(this.channels, saved.checkpoint);
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const [_, nextTasks] = _prepareNextTasks(
+        saved.checkpoint,
+        this.nodes,
+        channels,
+        false
+      );
+      yield {
+        values: readChannels(channels, this.streamChannelsAsIs),
+        next: nextTasks.map((task) => task.name),
+        metadata: saved.metadata,
+        config: saved.config,
+        createdAt: saved.checkpoint.ts,
+        parentConfig: saved.parentConfig,
+      };
+    }
+  }
+
+  async updateState(
+    config: RunnableConfig,
+    values: Record<string, unknown> | unknown,
+    asNode?: keyof Nn
+  ): Promise<RunnableConfig> {
+    if (!this.checkpointer) {
+      throw new GraphValueError("No checkpointer set");
+    }
+
+    // Get the latest checkpoint
+    const saved = await this.checkpointer.getTuple(config);
+    const checkpoint = saved
+      ? copyCheckpoint(saved.checkpoint)
+      : emptyCheckpoint();
+    // Find last that updated the state, if not provided
+    const maxSeens = Object.entries(checkpoint.versions_seen).reduce(
+      (acc, [node, versions]) => {
+        const maxSeen = Math.max(...Object.values(versions));
+        if (maxSeen) {
+          if (!acc[maxSeen]) {
+            acc[maxSeen] = [];
+          }
+          acc[maxSeen].push(node);
+        }
+        return acc;
+      },
+      {} as Record<number, string[]>
+    );
+    if (!asNode && !Object.keys(maxSeens).length) {
+      if (!Array.isArray(this.inputs) && this.inputs in this.nodes) {
+        asNode = this.inputs as keyof Nn;
+      }
+    } else if (!asNode) {
+      const maxSeen = Math.max(...Object.keys(maxSeens).map(Number));
+      const nodes = maxSeens[maxSeen];
+      if (nodes.length === 1) {
+        asNode = nodes[0] as keyof Nn;
+      }
+    }
+    if (!asNode) {
+      throw new InvalidUpdateError("Ambiguous update, specify as_node");
+    }
+    // update channels
+    const channels = emptyChannels(this.channels, checkpoint);
+    // create task to run all writers of the chosen node
+    const writers = this.nodes[asNode].getWriters();
+    if (!writers.length) {
+      throw new InvalidUpdateError(
+        `No writers found for node ${asNode as string}`
+      );
+    }
+    const task: PregelExecutableTask<keyof Nn, keyof Cc> = {
+      name: asNode,
+      input: values,
+      proc:
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        writers.length > 1 ? RunnableSequence.from(writers as any) : writers[0],
+      writes: [],
+      config: undefined,
+    };
+    // execute task
+    await task.proc.invoke(
+      task.input,
+      patchConfig(config, {
+        runName: `${this.name}UpdateState`,
+        configurable: {
+          [CONFIG_KEY_SEND]: (items: [keyof Cc, unknown][]) =>
+            task.writes.push(...items),
+          [CONFIG_KEY_READ]: _localRead.bind(
+            undefined,
+            checkpoint,
+            channels,
+            task.writes as Array<[string, unknown]>
+          ),
+        },
+      })
+    );
+    // apply to checkpoint and save
+    _applyWrites(checkpoint, channels, task.writes);
+    const step = (saved?.metadata?.step ?? -2) + 1;
+    return await this.checkpointer.put(
+      saved?.config ?? config,
+      createCheckpoint(checkpoint, channels, step),
+      {
+        source: "update",
+        step,
+        writes: { [asNode]: values },
+      }
+    );
+  }
+
   _defaults(config: PregelOptions<Nn, Cc>): [
     boolean, // debug
     StreamMode, // stream mode
     keyof Cc | Array<keyof Cc>, // input keys
     keyof Cc | Array<keyof Cc>, // output keys
     RunnableConfig, // config without pregel keys
-    All | Array<keyof Nn> | undefined, // interrupt before
-    All | Array<keyof Nn> | undefined // interrupt after,
+    All | Array<keyof Nn>, // interrupt before
+    All | Array<keyof Nn> // interrupt after,
   ] {
     const {
       debug,
@@ -337,25 +491,10 @@ export class Pregel<
       validateKeys(defaultInputKeys, this.channels);
     }
 
-    let defaultInterruptBefore;
-    if (
-      (Array.isArray(interruptBefore) && interruptBefore.length > 0) ||
-      interruptBefore === "*"
-    ) {
-      defaultInterruptBefore = interruptBefore;
-    } else {
-      defaultInterruptBefore = this.interruptBefore;
-    }
+    const defaultInterruptBefore =
+      interruptBefore ?? this.interruptBefore ?? [];
 
-    let defaultInterruptAfter;
-    if (
-      (Array.isArray(interruptAfter) && interruptAfter.length > 0) ||
-      interruptAfter === "*"
-    ) {
-      defaultInterruptAfter = interruptAfter;
-    } else {
-      defaultInterruptAfter = this.interruptAfter;
-    }
+    const defaultInterruptAfter = interruptAfter ?? this.interruptAfter ?? [];
 
     let defaultStreamMode: StreamMode;
     if (streamMode !== undefined) {
@@ -406,8 +545,8 @@ export class Pregel<
         inputKeys,
         outputKeys,
         restConfig,
-        // interruptBefore,
-        // interruptAfter,
+        interruptBefore,
+        interruptAfter,
       ] = this._defaults(config);
       // copy nodes to ignore mutations during execution
       const processes = { ...this.nodes };
@@ -458,7 +597,14 @@ export class Pregel<
         // increment start to 0
         start += 1;
       } else {
-        // TODO mark INTERRUPT as seen
+        checkpoint = copyCheckpoint(checkpoint);
+        for (const k of this.streamChannelsList) {
+          const version = checkpoint.channel_versions[k as string] ?? 0;
+          if (!checkpoint.versions_seen[INTERRUPT]) {
+            checkpoint.versions_seen[INTERRUPT] = {};
+          }
+          checkpoint.versions_seen[INTERRUPT][k as string] = version;
+        }
       }
 
       // Similarly to Bulk Synchronous Parallel / Pregel model
@@ -468,21 +614,12 @@ export class Pregel<
       // with channel updates applied only at the transition between steps
       const stop = start + (config.recursionLimit ?? DEFAULT_LOOP_LIMIT);
       for (let step = start; step < stop + 1; step += 1) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const [nextCheckpoint, nextTasks] = _prepareNextTasks(
           checkpoint,
           processes,
           channels,
           true
         );
-
-        if (debug) {
-          console.log(nextTasks);
-        }
-
-        // Reassign nextCheckpoint to checkpoint because the subsequent implementation
-        // relies on side effects applied to checkpoint. Example: _applyWrites().
-        checkpoint = nextCheckpoint as Checkpoint;
 
         // if no more tasks, we're done
         if (nextTasks.length === 0 && step === start) {
@@ -495,35 +632,47 @@ export class Pregel<
           );
         }
 
-        // TODO interrupt before
+        // before execution, check if we should interrupt
+        if (
+          _shouldInterrupt(
+            checkpoint,
+            interruptBefore,
+            this.streamChannelsList,
+            nextTasks
+          )
+        ) {
+          break;
+        } else {
+          checkpoint = nextCheckpoint;
+        }
 
-        // A copy of the checkpoint is created because `checkpoint` is defined with `let`.
-        // `checkpoint` can be mutated during loop execution and when used in a function,
-        // may cause unintended consequences.
-        const checkpointCopy = copyCheckpoint(checkpoint);
+        if (debug) {
+          console.log(nextTasks);
+        }
 
-        const tasksWithConfig: Array<
-          [RunnableInterface, unknown, RunnableConfig]
-        > = nextTasks.map((task) => [
-          task.proc,
-          task.input,
-          patchConfig(restConfig, {
-            callbacks: runManager?.getChild(`graph:step:${step}`),
-            runName: task.name,
-            configurable: {
-              ...config.configurable,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              [CONFIG_KEY_SEND]: (items: [string, any][]) =>
-                task.writes.push(...items),
-              [CONFIG_KEY_READ]: _localRead.bind(
-                undefined,
-                checkpointCopy,
-                channels,
-                task.writes
-              ),
-            },
-          }),
-        ]);
+        const tasksWithConfig = nextTasks.map(
+          // eslint-disable-next-line no-loop-func
+          (task) =>
+            [
+              task.proc,
+              task.input,
+              patchConfig(restConfig, {
+                callbacks: runManager?.getChild(`graph:step:${step}`),
+                runName: task.name as string,
+                configurable: {
+                  ...config.configurable,
+                  [CONFIG_KEY_SEND]: (items: [keyof Cc, unknown][]) =>
+                    task.writes.push(...items),
+                  [CONFIG_KEY_READ]: _localRead.bind(
+                    undefined,
+                    checkpoint,
+                    channels,
+                    task.writes as Array<[string, unknown]>
+                  ),
+                },
+              }),
+            ] as const
+        );
 
         // execute tasks, and wait for one to fail or all to finish.
         // each task is independent from all other concurrent tasks
@@ -536,7 +685,7 @@ export class Pregel<
         await executeTasks(tasks, this.stepTimeout);
 
         // combine pending writes from all tasks
-        const pendingWrites: Array<[string, unknown]> = [];
+        const pendingWrites: Array<[keyof Cc, unknown]> = [];
         for (const task of nextTasks) {
           pendingWrites.push(...task.writes);
         }
@@ -559,7 +708,7 @@ export class Pregel<
               source: "loop",
               step,
               writes: single(
-                streamMode === "values"
+                this.streamMode === "values"
                   ? mapOutputValues(outputKeys, pendingWrites, channels)
                   : mapOutputUpdates(outputKeys, nextTasks)
               ),
@@ -573,7 +722,16 @@ export class Pregel<
           };
         }
 
-        // TODO interrupt after
+        if (
+          _shouldInterrupt(
+            checkpoint,
+            interruptAfter,
+            this.streamChannelsList,
+            nextTasks
+          )
+        ) {
+          break;
+        }
       }
     } finally {
       await Promise.all(bg);
@@ -660,27 +818,30 @@ async function executeTasks<RunOutput>(
   }
 }
 
-export function _shouldInterrupt(
-  checkpoint: Checkpoint,
-  interruptNodes: Array<string>,
-  snapshotChannels: Array<string>,
-  tasks: Array<PregelExecutableTask>
+export function _shouldInterrupt<N extends PropertyKey, C extends PropertyKey>(
+  checkpoint: ReadonlyCheckpoint,
+  interruptNodes: All | Array<N>,
+  snapshotChannels: Array<C>,
+  tasks: Array<PregelExecutableTask<N, C>>
 ): boolean {
-  const seen = checkpoint.versions_seen[INTERRUPT];
   const anySnapshotChannelUpdated = snapshotChannels.some(
-    (chan) => checkpoint.channel_versions[chan] > seen[chan]
+    (chan) =>
+      getChannelVersion(checkpoint, chan as string) >
+      getVersionSeen(checkpoint, INTERRUPT, chan as string)
   );
   const anyTaskNodeInInterruptNodes = tasks.some((task) =>
-    interruptNodes.includes(task.name)
+    interruptNodes === "*"
+      ? !task.config?.tags?.includes(TAG_HIDDEN)
+      : interruptNodes.includes(task.name)
   );
   return anySnapshotChannelUpdated && anyTaskNodeInInterruptNodes;
 }
 
-export function _localRead(
-  checkpoint: Checkpoint,
-  channels: Record<string, BaseChannel>,
-  writes: Array<[string, unknown]>,
-  select: Array<string> | string,
+export function _localRead<Cc extends StrRecord<string, BaseChannel>>(
+  checkpoint: ReadonlyCheckpoint,
+  channels: Cc,
+  writes: Array<[keyof Cc, unknown]>,
+  select: Array<keyof Cc> | keyof Cc,
   fresh: boolean = false
 ): Record<string, unknown> | unknown {
   if (fresh) {
@@ -725,7 +886,7 @@ export function _applyWrites<Cc extends Record<string, BaseChannel>>(
         channels[chan].update(vals);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
-        if (e.name === InvalidUpdateError.name) {
+        if (e.name === InvalidUpdateError.unminifiable_name) {
           throw new InvalidUpdateError(
             `Invalid update for channel ${chan}. Values: ${vals}`
           );
@@ -750,39 +911,45 @@ export function _applyWrites<Cc extends Record<string, BaseChannel>>(
   }
 }
 
-export function _prepareNextTasks(
-  checkpoint: Checkpoint,
-  processes: Record<string, PregelNode>,
-  channels: Record<string, BaseChannel>,
+export function _prepareNextTasks<
+  Nn extends StrRecord<string, PregelNode>,
+  Cc extends StrRecord<string, BaseChannel>
+>(
+  checkpoint: ReadonlyCheckpoint,
+  processes: Nn,
+  channels: Cc,
   forExecution: false
 ): [Checkpoint, Array<PregelTaskDescription>];
 
-export function _prepareNextTasks(
-  checkpoint: Checkpoint,
-  processes: Record<string, PregelNode>,
-  channels: Record<string, BaseChannel>,
+export function _prepareNextTasks<
+  Nn extends StrRecord<string, PregelNode>,
+  Cc extends StrRecord<string, BaseChannel>
+>(
+  checkpoint: ReadonlyCheckpoint,
+  processes: Nn,
+  channels: Cc,
   forExecution: true
-): [Checkpoint, Array<PregelExecutableTask>];
+): [Checkpoint, Array<PregelExecutableTask<keyof Nn, keyof Cc>>];
 
-export function _prepareNextTasks(
-  checkpoint: Checkpoint,
-  processes: Record<string, PregelNode>,
-  channels: Record<string, BaseChannel>,
+export function _prepareNextTasks<
+  Nn extends StrRecord<string, PregelNode>,
+  Cc extends StrRecord<string, BaseChannel>
+>(
+  checkpoint: ReadonlyCheckpoint,
+  processes: Nn,
+  channels: Cc,
   forExecution: boolean
-): [Checkpoint, Array<PregelTaskDescription> | Array<PregelExecutableTask>] {
+): [
+  Checkpoint,
+  PregelTaskDescription[] | PregelExecutableTask<keyof Nn, keyof Cc>[]
+] {
   const newCheckpoint = copyCheckpoint(checkpoint);
-  const tasks: Array<PregelExecutableTask> = [];
+  const tasks: Array<PregelExecutableTask<keyof Nn, keyof Cc>> = [];
   const taskDescriptions: Array<PregelTaskDescription> = [];
 
   // Check if any processes should be run in next step
   // If so, prepare the values to be passed to them
   for (const [name, proc] of Object.entries<PregelNode>(processes)) {
-    let seen = newCheckpoint.versions_seen[name];
-    if (!seen) {
-      newCheckpoint.versions_seen[name] = {};
-      seen = newCheckpoint.versions_seen[name];
-    }
-
     // If any of the channels read by this process were updated
     if (
       proc.triggers
@@ -795,7 +962,9 @@ export function _prepareNextTasks(
           }
         })
         .some(
-          (chan) => newCheckpoint.channel_versions[chan] > (seen[chan] ?? 0)
+          (chan) =>
+            getChannelVersion(newCheckpoint, chan) >
+            getVersionSeen(newCheckpoint, name, chan)
         )
     ) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -811,7 +980,7 @@ export function _prepareNextTasks(
             break;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
           } catch (e: any) {
-            if (e.name === EmptyChannelError.name) {
+            if (e.name === EmptyChannelError.unminifiable_name) {
               emptyChannels += 1;
               continue;
             } else {
@@ -831,7 +1000,7 @@ export function _prepareNextTasks(
           }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (e: any) {
-          if (e.name === EmptyChannelError.name) {
+          if (e.name === EmptyChannelError.unminifiable_name) {
             continue;
           } else {
             throw e;
@@ -850,11 +1019,14 @@ export function _prepareNextTasks(
 
       if (forExecution) {
         // Update seen versions
+        if (!newCheckpoint.versions_seen[name]) {
+          newCheckpoint.versions_seen[name] = {};
+        }
         proc.triggers.forEach((chan: string) => {
           const version = newCheckpoint.channel_versions[chan];
           if (version !== undefined) {
             // side effect: updates newCheckpoint
-            seen[chan] = version;
+            newCheckpoint.versions_seen[name][chan] = version;
           }
         });
 

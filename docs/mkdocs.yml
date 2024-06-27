@@ -1,6 +1,8 @@
-site_name: LangGraphJS
+site_name: LangGraph.js
 site_description: Build language agents as graphs
 site_url: https://langchain-ai.github.io/langgraphjs/
+repo_url: https://github.com/langchain-ai/langgraphjs
+edit_uri: edit/main/docs/docs/
 theme:
   name: material
   custom_dir: overrides
@@ -32,18 +34,18 @@ theme:
     - search.suggest
     - toc.follow
   palette:
-  - scheme: default
-    primary: white
-    accent: gray
-    toggle:
-      icon: material/brightness-7
-      name: Switch to dark mode
-  - scheme: slate
-    primary: grey
-    accent: white
-    toggle:
-      icon: material/brightness-4
-      name: Switch to light mode
+    - scheme: default
+      primary: white
+      accent: gray
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: grey
+      accent: white
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   font:
     text: "Public Sans"
     code: "Roboto Mono"
@@ -57,17 +59,18 @@ plugins:
       include_source: True
       include_requirejs: true
   - typedoc:
-      source: '../langgraph/*.d.ts'
-      output_dir: './reference'
-      tsconfig: '../tsconfig.json'
-      options: 'typedoc.json'
-      name: 'API Reference'
+      source: "../langgraph/*.d.ts"
+      output_dir: "./reference"
+      tsconfig: "../tsconfig.json"
+      options: "typedoc.json"
+      name: "API Reference"
       title_link: "/" # optional, default: '/'
 nav:
-  - Home: 
-      - 'index.md'
+  - Home:
+      - "index.md"
+      - Quick Start: tutorials/quickstart.ipynb
   - Tutorials:
-      - 'tutorials/index.md'
+      - "tutorials/index.md"
       - Use cases:
           - Multi-Agent Systems:
               - tutorials/multi_agent/agent_supervisor.ipynb
@@ -77,18 +80,34 @@ nav:
               - tutorials/rag/langgraph_agentic_rag.ipynb
               - tutorials/rag/langgraph_crag.ipynb
               - tutorials/rag/langgraph_self_rag.ipynb
+              - tutorials/rag/langgraph_adaptive_rag_local.ipynb
           - Planning Agents:
               - tutorials/plan-and-execute/plan-and-execute.ipynb
           - Reflection & Critique:
               - tutorials/reflection/reflection.ipynb
               - tutorials/rewoo/rewoo.ipynb
   - "How-to Guides":
-     - 'how-tos/index.md'
+      - "how-tos/index.md"
+      - Installation:
+          - "how-tos/manage-ecosystem-dependencies.ipynb"
+          - "how-tos/use-in-web-environments.ipynb"
+      - Core:
+          - "how-tos/persistence.ipynb"
+          - "how-tos/time-travel.ipynb"
+          - "how-tos/stream-tokens.ipynb"
+          - "how-tos/configuration.ipynb"
+      - Design Patterns:
+          - "how-tos/branching.ipynb"
+          - "how-tos/subgraph.ipynb"
+          - "how-tos/human-in-the-loop.ipynb"
+          - "how-tos/force-calling-a-tool-first.ipynb"
+          - "how-tos/dynamically-returning-directly.ipynb"
+          - "how-tos/respond-in-format.ipynb"
+          - "how-tos/managing-agent-steps.ipynb"
   - "Conceptual Guides":
-     - 'concepts/index.md'
+      - "concepts/index.md"
   - "Reference":
-     - 'reference/index.html'
-  
+      - "reference/index.html"
 
 markdown_extensions:
   - abbr
@@ -119,7 +138,7 @@ markdown_extensions:
   - pymdownx.magiclink:
       normalize_issue_symbols: true
       repo_url_shorthand: true
-      user: langchain-ai 
+      user: langchain-ai
       repo: langgraphjs
   - pymdownx.mark
   - pymdownx.smartsymbols
@@ -141,7 +160,7 @@ extra_css:
 
 extra:
   social:
-    - icon: fontawesome/brands/python 
+    - icon: fontawesome/brands/python
       link: https://langchain-ai.github.io/langgraph/
     - icon: fontawesome/brands/github
       link: https://github.com/langchain-ai/langgraphjs

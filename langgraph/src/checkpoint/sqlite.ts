@@ -72,8 +72,10 @@ CREATE TABLE IF NOT EXISTS checkpoints (
         if (row) {
           return {
             config,
-            checkpoint: this.serde.parse(row.checkpoint) as Checkpoint,
-            metadata: this.serde.parse(row.metadata) as CheckpointMetadata,
+            checkpoint: (await this.serde.parse(row.checkpoint)) as Checkpoint,
+            metadata: (await this.serde.parse(
+              row.metadata
+            )) as CheckpointMetadata,
             parentConfig: row.parent_id
               ? {
                   configurable: {
@@ -103,8 +105,10 @@ CREATE TABLE IF NOT EXISTS checkpoints (
               checkpoint_id: row.checkpoint_id,
             },
           },
-          checkpoint: this.serde.parse(row.checkpoint) as Checkpoint,
-          metadata: this.serde.parse(row.metadata) as CheckpointMetadata,
+          checkpoint: (await this.serde.parse(row.checkpoint)) as Checkpoint,
+          metadata: (await this.serde.parse(
+            row.metadata
+          )) as CheckpointMetadata,
           parentConfig: row.parent_id
             ? {
                 configurable: {
@@ -120,16 +124,25 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     return undefined;
   }
 
-  async *list(config: RunnableConfig): AsyncGenerator<CheckpointTuple> {
+  async *list(
+    config: RunnableConfig,
+    limit?: number,
+    before?: RunnableConfig
+  ): AsyncGenerator<CheckpointTuple> {
     this.setup();
     const thread_id = config.configurable?.thread_id;
+    let sql = `SELECT thread_id, checkpoint_id, parent_id, checkpoint, metadata FROM checkpoints WHERE thread_id = ? ${
+      before ? "AND checkpoint_id < ?" : ""
+    } ORDER BY checkpoint_id DESC`;
+    if (limit) {
+      sql += ` LIMIT ${limit}`;
+    }
+    const args = [thread_id, before?.configurable?.checkpoint_id].filter(
+      Boolean
+    );
 
     try {
-      const rows: Row[] = this.db
-        .prepare(
-          `SELECT thread_id, checkpoint_id, parent_id, checkpoint, metadata FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC`
-        )
-        .all(thread_id) as Row[];
+      const rows: Row[] = this.db.prepare(sql).all(...args) as Row[];
 
       if (rows) {
         for (const row of rows) {
@@ -140,8 +153,10 @@ CREATE TABLE IF NOT EXISTS checkpoints (
                 checkpoint_id: row.checkpoint_id,
               },
             },
-            checkpoint: this.serde.parse(row.checkpoint) as Checkpoint,
-            metadata: this.serde.parse(row.metadata) as CheckpointMetadata,
+            checkpoint: (await this.serde.parse(row.checkpoint)) as Checkpoint,
+            metadata: (await this.serde.parse(
+              row.metadata
+            )) as CheckpointMetadata,
             parentConfig: row.parent_id
               ? {
                   configurable: {

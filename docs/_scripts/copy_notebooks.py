@@ -10,19 +10,28 @@ how_tos_dir = docs_dir / "how-tos"
 tutorials_dir = docs_dir / "tutorials"
 
 _MANUAL = {
-    "how-tos": [],
+    "how-tos": [
+        "examples/how-tos/persistence.ipynb",
+        "examples/how-tos/stream-tokens.ipynb",
+    ],
     "tutorials": [
+        "quickstart.ipynb",
         "rag/langgraph_agentic_rag.ipynb",
         "rag/langgraph_crag.ipynb",
         "rag/langgraph_self_rag.ipynb",
+        "rag/langgraph_adaptive_rag_local.ipynb",
         "multi_agent/multi_agent_collaboration.ipynb",
         "multi_agent/agent_supervisor.ipynb",
         "multi_agent/hierarchical_agent_teams.ipynb",
-
     ],
 }
 _MANUAL_INVERSE = {v: docs_dir / k for k, vs in _MANUAL.items() for v in vs}
-_HOW_TOS = {"agent_executor", "chat_agent_executor_with_function_calling", "docs"}
+_HOW_TOS = {
+    "agent_executor",
+    "chat_agent_executor_with_function_calling",
+    "docs",
+    "how-tos",
+}
 _MAP = {
     "persistence_postgres.ipynb": "tutorial",
 }
@@ -81,16 +90,16 @@ def copy_notebooks():
                     continue
                 dst_path = os.path.join(
                     dst_dir, os.path.relpath(src_path, examples_dir)
-                )
+                ).replace("how-tos/how-tos", "how-tos")
                 for k in _MANUAL_INVERSE:
                     if src_path.endswith(k):
                         overridden_dir = _MANUAL_INVERSE[k]
                         dst_path = os.path.join(
                             overridden_dir, os.path.relpath(src_path, examples_dir)
                         )
+                        dst_path = dst_path.replace("how-tos/how-tos", "how-tos")
                         print(f"Overriding: {src_path} to {dst_path}")
                         break
-
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
                 print(f"Copying: {src_path} to {dst_path}")
                 shutil.copy(src_path, dst_path)

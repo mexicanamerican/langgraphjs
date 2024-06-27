@@ -37,7 +37,6 @@ import { ToolExecutor, createAgentExecutor } from "../prebuilt/index.js";
 import { MessageGraph } from "../graph/message.js";
 import { PASSTHROUGH } from "../pregel/write.js";
 import { Checkpoint } from "../checkpoint/base.js";
-import { PregelExecutableTask } from "../pregel/types.js";
 import { GraphRecursionError, InvalidUpdateError } from "../errors.js";
 import { SqliteSaver } from "../checkpoint/sqlite.js";
 import { uuid6 } from "../checkpoint/id.js";
@@ -236,19 +235,50 @@ describe("_shouldInterrupt", () => {
 
     const interruptNodes = ["node1"];
     const snapshotChannels = ["channel1"];
-    const tasks: Array<PregelExecutableTask> = [
-      {
-        name: "node1",
-        input: undefined,
-        proc: new RunnablePassthrough(),
-        writes: [],
-        config: undefined,
-      },
-    ];
 
     // call method / assertions
     expect(
-      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, tasks)
+      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, [
+        {
+          name: "node1",
+          input: undefined,
+          proc: new RunnablePassthrough(),
+          writes: [],
+          config: undefined,
+        },
+      ])
+    ).toBe(true);
+  });
+
+  it("should return true if any snapshot channel has been updated since last interrupt and any channel written to is in interrupt nodes list", () => {
+    // set up test
+    const checkpoint: Checkpoint = {
+      v: 1,
+      id: uuid6(-1),
+      ts: "2024-04-19T17:19:07.952Z",
+      channel_values: {
+        channel1: "channel1value",
+      },
+      channel_versions: {
+        channel1: 2, // current channel version is greater than last version seen
+      },
+      versions_seen: {},
+    };
+
+    const interruptNodes = ["node1"];
+    const snapshotChannels = ["channel1"];
+
+    // call method / assertions
+    expect(
+      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, [
+        {
+          name: "node1",
+          input: undefined,
+          proc: new RunnablePassthrough(),
+          writes: [],
+          config: undefined,
+        },
+      ])
     ).toBe(true);
   });
 
@@ -273,19 +303,18 @@ describe("_shouldInterrupt", () => {
 
     const interruptNodes = ["node1"];
     const snapshotChannels = ["channel1"];
-    const tasks: Array<PregelExecutableTask> = [
-      {
-        name: "node1",
-        input: undefined,
-        proc: new RunnablePassthrough(),
-        writes: [],
-        config: undefined,
-      },
-    ];
 
     // call method / assertions
     expect(
-      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, tasks)
+      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, [
+        {
+          name: "node1",
+          input: undefined,
+          proc: new RunnablePassthrough(),
+          writes: [],
+          config: undefined,
+        },
+      ])
     ).toBe(false);
   });
 
@@ -310,19 +339,18 @@ describe("_shouldInterrupt", () => {
 
     const interruptNodes = ["node1"];
     const snapshotChannels = ["channel1"];
-    const tasks: Array<PregelExecutableTask> = [
-      {
-        name: "node2", // node2 is not in interrupt nodes
-        input: undefined,
-        proc: new RunnablePassthrough(),
-        writes: [],
-        config: undefined,
-      },
-    ];
 
     // call method / assertions
     expect(
-      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, tasks)
+      _shouldInterrupt(checkpoint, interruptNodes, snapshotChannels, [
+        {
+          name: "node2", // node2 is not in interrupt nodes
+          input: undefined,
+          proc: new RunnablePassthrough(),
+          writes: [],
+          config: undefined,
+        },
+      ])
     ).toBe(false);
   });
 });
@@ -2083,8 +2111,9 @@ it("StateGraph start branch then end", async () => {
       source: START,
       path: (state: State) =>
         state.market === "DE" ? "tool_two_slow" : "tool_two_fast",
-      then: END,
-    });
+    })
+    .addEdge("tool_two_fast", END)
+    .addEdge("tool_two_slow", END);
 
   const toolTwo = toolTwoBuilder.compile();
 
@@ -2106,73 +2135,56 @@ it("StateGraph start branch then end", async () => {
     toolTwoWithCheckpointer.invoke({ my_key: "value", market: "DE" })
   ).rejects.toThrowError("thread_id");
 
-  // const thread1 = { configurable: { thread_id: "1" } }
-  // expect(toolTwoWithCheckpointer.invoke({ my_key: "value", market: "DE" }, thread1)).toEqual({ my_key: "value", market: "DE" })
-  // expect(toolTwoWithCheckpointer.getState(thread1)).toEqual({
-  //   values: { my_key: "value", market: "DE" },
-  //   next: ["tool_two_slow"],
-  //   config: toolTwoWithCheckpointer.checkpointer.getTuple(thread1).config,
-  //   metadata: { source: "loop", step: 0, writes: null },
-  //   parentConfig: [...toolTwoWithCheckpointer.checkpointer.list(thread1, { limit: 2 })].pop().config
-  // })
+  async function last<T>(iter: AsyncIterableIterator<T>): Promise<T> {
+    // eslint-disable-next-line no-undef-init
+    let value: T | undefined = undefined;
+    for await (value of iter) {
+      // do nothing
+    }
+    return value as T;
+  }
 
-  // expect(toolTwoWithCheckpointer.invoke(null, thread1, { debug: 1 })).toEqual({ my_key: "value slow", market: "DE" })
-  // expect(toolTwoWithCheckpointer.getState(thread1)).toEqual({
-  //   values: { my_key
-  //     : "value slow", market: "DE" },
-  //   next: [],
-  //   config: (await toolTwoWithCheckpointer.checkpointer!.getTuple(thread1))!.config,
-  //   metadata: { source: "loop", step: 1, writes: { tool_two_slow: { my_key: " slow" } } },
-  //   parentConfig: [...toolTwoWithCheckpointer.checkpointer!.list(thread1, { limit: 2 })].pop().config
+  const thread1 = { configurable: { thread_id: "1" } };
+  expect(
+    await toolTwoWithCheckpointer.invoke(
+      { my_key: "value", market: "DE" },
+      thread1
+    )
+  ).toEqual({ my_key: "value", market: "DE" });
+  expect(await toolTwoWithCheckpointer.getState(thread1)).toEqual({
+    values: { my_key: "value", market: "DE" },
+    next: ["tool_two_slow"],
+    config: (await toolTwoWithCheckpointer.checkpointer!.getTuple(thread1))!
+      .config,
+    createdAt: (await toolTwoWithCheckpointer.checkpointer!.getTuple(thread1))!
+      .checkpoint.ts,
+    metadata: { source: "loop", step: 0, writes: null },
+    parentConfig: (
+      await last(toolTwoWithCheckpointer.checkpointer!.list(thread1, 2))
+    ).config,
+  });
+
+  expect(await toolTwoWithCheckpointer.invoke(null, thread1)).toEqual({
+    my_key: "value slow",
+    market: "DE",
+  });
+  expect(await toolTwoWithCheckpointer.getState(thread1)).toEqual({
+    values: { my_key: "value slow", market: "DE" },
+    next: [],
+    config: (await toolTwoWithCheckpointer.checkpointer!.getTuple(thread1))!
+      .config,
+    createdAt: (await toolTwoWithCheckpointer.checkpointer!.getTuple(thread1))!
+      .checkpoint.ts,
+    metadata: {
+      source: "loop",
+      step: 1,
+      writes: { tool_two_slow: { my_key: " slow" } },
+    },
+    parentConfig: (
+      await last(toolTwoWithCheckpointer.checkpointer!.list(thread1, 2))
+    ).config,
+  });
 });
-
-/**
- * def test_branch_then_node(snapshot: SnapshotAssertion) -> None:
-    class State(TypedDict):
-        my_key: Annotated[str, operator.add]
-        market: str
-
-    # this graph is invalid because there is no path to "finish"
-    invalid_graph = StateGraph(State)
-    invalid_graph.set_entry_point("prepare")
-    invalid_graph.set_finish_point("finish")
-    invalid_graph.add_conditional_edges(
-        source="prepare",
-        path=lambda s: "tool_two_slow" if s["market"] == "DE" else "tool_two_fast",
-        path_map=["tool_two_slow", "tool_two_fast"],
-    )
-    invalid_graph.add_node("prepare", lambda s: {"my_key": " prepared"})
-    invalid_graph.add_node("tool_two_slow", lambda s: {"my_key": " slow"})
-    invalid_graph.add_node("tool_two_fast", lambda s: {"my_key": " fast"})
-    invalid_graph.add_node("finish", lambda s: {"my_key": " finished"})
-    with pytest.raises(ValueError):
-        invalid_graph.compile()
-
-    tool_two_graph = StateGraph(State)
-    tool_two_graph.set_entry_point("prepare")
-    tool_two_graph.set_finish_point("finish")
-    tool_two_graph.add_conditional_edges(
-        source="prepare",
-        path=lambda s: "tool_two_slow" if s["market"] == "DE" else "tool_two_fast",
-        then="finish",
-    )
-    tool_two_graph.add_node("prepare", lambda s: {"my_key": " prepared"})
-    tool_two_graph.add_node("tool_two_slow", lambda s: {"my_key": " slow"})
-    tool_two_graph.add_node("tool_two_fast", lambda s: {"my_key": " fast"})
-    tool_two_graph.add_node("finish", lambda s: {"my_key": " finished"})
-    tool_two = tool_two_graph.compile()
-    assert tool_two.get_graph().draw_mermaid(with_styles=False) == snapshot
-    assert tool_two.get_graph().draw_mermaid() == snapshot
-
-    assert tool_two.invoke({"my_key": "value", "market": "DE"}, debug=1) == {
-        "my_key": "value prepared slow finished",
-        "market": "DE",
-    }
-    assert tool_two.invoke({"my_key": "value", "market": "US"}) == {
-        "my_key": "value prepared fast finished",
-        "market": "US",
-    }
- */
 
 it("StateGraph branch then node", async () => {
   interface State {
@@ -2216,8 +2228,9 @@ it("StateGraph branch then node", async () => {
       source: "prepare",
       path: (state: State) =>
         state.market === "DE" ? "tool_two_slow" : "tool_two_fast",
-      then: "finish",
     })
+    .addEdge("tool_two_fast", "finish")
+    .addEdge("tool_two_slow", "finish")
     .addEdge("finish", END);
 
   const tool = toolBuilder.compile();

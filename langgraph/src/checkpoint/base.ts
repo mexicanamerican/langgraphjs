@@ -1,5 +1,5 @@
 import { RunnableConfig } from "@langchain/core/runnables";
-import { SerializerProtocol } from "../serde/base.js";
+import { DefaultSerializer, SerializerProtocol } from "../serde/base.js";
 import { uuid6 } from "./id.js";
 
 export interface CheckpointMetadata {
@@ -15,14 +15,17 @@ export interface CheckpointMetadata {
    * -1 for the first "input" checkpoint.
    * 0 for the first "loop" checkpoint.
    * ... for the nth checkpoint afterwards. */
-  writes?: Record<string, unknown>;
+  writes: Record<string, unknown> | null;
   /**
    * The writes that were made between the previous checkpoint and this one.
    * Mapping from node name to writes emitted by that node.
    */
 }
 
-export interface Checkpoint {
+export interface Checkpoint<
+  N extends string = string,
+  C extends string = string
+> {
   /**
    * Version number
    */
@@ -38,16 +41,38 @@ export interface Checkpoint {
   /**
    * @default {}
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  channel_values: Record<string, any>;
+  channel_values: Record<C, unknown>;
   /**
    * @default {}
    */
-  channel_versions: Record<string, number>;
+  channel_versions: Record<C, number>;
   /**
    * @default {}
    */
-  versions_seen: Record<string, Record<string, number>>;
+  versions_seen: Record<N, Record<C, number>>;
+}
+
+export interface ReadonlyCheckpoint extends Readonly<Checkpoint> {
+  readonly channel_values: Readonly<Record<string, unknown>>;
+  readonly channel_versions: Readonly<Record<string, number>>;
+  readonly versions_seen: Readonly<
+    Record<string, Readonly<Record<string, number>>>
+  >;
+}
+
+export function getChannelVersion(
+  checkpoint: ReadonlyCheckpoint,
+  channel: string
+): number {
+  return checkpoint.channel_versions[channel] ?? 0;
+}
+
+export function getVersionSeen(
+  checkpoint: ReadonlyCheckpoint,
+  node: string,
+  channel: string
+): number {
+  return checkpoint.versions_seen[node]?.[channel] ?? 0;
 }
 
 export function deepCopy<T>(obj: T): T {
@@ -79,7 +104,7 @@ export function emptyCheckpoint(): Checkpoint {
   };
 }
 
-export function copyCheckpoint(checkpoint: Checkpoint): Checkpoint {
+export function copyCheckpoint(checkpoint: ReadonlyCheckpoint): Checkpoint {
   return {
     v: checkpoint.v,
     id: checkpoint.id,
@@ -98,7 +123,7 @@ export interface CheckpointTuple {
 }
 
 export abstract class BaseCheckpointSaver {
-  serde: SerializerProtocol<unknown> = JSON;
+  serde: SerializerProtocol<unknown> = DefaultSerializer;
 
   constructor(serde?: SerializerProtocol<unknown>) {
     this.serde = serde || this.serde;
@@ -113,7 +138,11 @@ export abstract class BaseCheckpointSaver {
     config: RunnableConfig
   ): Promise<CheckpointTuple | undefined>;
 
-  abstract list(config: RunnableConfig): AsyncGenerator<CheckpointTuple>;
+  abstract list(
+    config: RunnableConfig,
+    limit?: number,
+    before?: RunnableConfig
+  ): AsyncGenerator<CheckpointTuple>;
 
   abstract put(
     config: RunnableConfig,
