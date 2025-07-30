@@ -1,5 +1,12 @@
 # @langchain/langgraph-api
 
+## 0.0.55
+
+### Patch Changes
+
+- 77b21d5: add installed langgraph version to info endpoint for js server
+  - @langchain/langgraph-ui@0.0.55
+
 ## 0.0.54
 
 ### Patch Changes
