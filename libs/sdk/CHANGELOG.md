@@ -1,5 +1,11 @@
 # @langchain/langgraph-sdk
 
+## 1.0.1
+
+### Patch Changes
+
+- cc9dc28: Add `values` parameter to thread search
+
 ## 1.0.0
 
 ### Major Changes
