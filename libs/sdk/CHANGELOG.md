@@ -1,5 +1,11 @@
 # @langchain/langgraph-sdk
 
+## 1.2.0
+
+### Minor Changes
+
+- 379de5e: Fix tool calls arguments not being streamed to the client
+
 ## 1.1.0
 
 ### Minor Changes
