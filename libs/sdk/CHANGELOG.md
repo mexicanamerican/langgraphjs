@@ -1,5 +1,13 @@
 # @langchain/langgraph-sdk
 
+## 1.9.26
+
+### Patch Changes
+
+- [#2602](https://github.com/langchain-ai/langgraphjs/pull/2602) [`c201256`](https://github.com/langchain-ai/langgraphjs/commit/c201256b27d55c9aa333d3d15f6ec16c2fd7de9b) Thanks [@HugoDurand](https://github.com/HugoDurand)! - fix(sdk): support clearing a cron's end time via `crons.update(cronId, { endTime: null })`
+
+  `CronsClient.update` now accepts `endTime: null` to clear a previously set cron end time; omitting `endTime` still leaves it unchanged. The field was typed `string`, so callers could not express "clear" even though the request already forwards an explicit `null`.
+
 ## 1.9.25
 
 ### Patch Changes
