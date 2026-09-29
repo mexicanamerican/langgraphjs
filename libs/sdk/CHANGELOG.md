@@ -1,5 +1,11 @@
 # @langchain/langgraph-sdk
 
+## 1.12.1
+
+### Patch Changes
+
+- [#2882](https://github.com/langchain-ai/langgraphjs/pull/2882) [`cca4806`](https://github.com/langchain-ai/langgraphjs/commit/cca48067b78fa9e3dc632c02a3431e74ff3f91b1) Thanks [@buenjybar](https://github.com/buenjybar)! - Fix `useStream`/`StreamOrchestrator` leaving stale, never-checkpointed messages visible after `stop()` cancels a run mid-turn. The buffer is now reconciled against the persisted thread state (refetching it when the caller needs authoritative thread state, otherwise falling back to the cached history) instead of only clearing on a thread switch or remount.
+
 ## 1.12.0
 
 ### Minor Changes
